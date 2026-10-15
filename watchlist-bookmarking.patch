@@ -1,0 +1,256 @@
+diff --git a/README.md b/README.md
+index 1fdc561..1095cfa 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # Watchlist
+ 
+-Minimal multi-watchlist app for TradingView symbols. Spec: `watchlist-prd-v1.1.md`.
++Minimal multi-watchlist app for TradingView symbols. Spec: `watchlist-prd-v1.6.md`.
+ 
+ pnpm + Turborepo monorepo, following the official shadcn/ui `vite-monorepo` template.
+ 
+@@ -26,7 +26,7 @@ Imports: `@workspace/core/domain`, `@workspace/core/store`, `@workspace/ui/compo
+ ## Setup (once)
+ 
+ ```bash
+-# 1. Scaffold the monorepo: choose Vite, keep the Base UI default. Name it "watchlist".
++# 1. Scaffold the monorepo: choose Vite, keep the Base UI default. Name it "Watchlist".
+ pnpm dlx shadcn@latest init --monorepo
+ cd watchlist
+ 
+diff --git a/apps/web/src/components/symbol-row.tsx b/apps/web/src/components/symbol-row.tsx
+index 140395e..eeaeec3 100644
+--- a/apps/web/src/components/symbol-row.tsx
++++ b/apps/web/src/components/symbol-row.tsx
+@@ -34,7 +34,7 @@ interface SymbolRowContentProps {
+   symbol: string
+   index: number
+   flag: FlagColor | undefined
+-  /** `navKey` of the list showing this row, so the TWLX extension can navigate it. */
++  /** `navKey` of the list showing this row, so the Watchlist Extension can navigate it. */
+   nav: string
+   menu?: ReactNode
+   deleteLabel: string
+diff --git a/apps/web/src/components/warning-banner.tsx b/apps/web/src/components/warning-banner.tsx
+index c7fcb5b..3da445c 100644
+--- a/apps/web/src/components/warning-banner.tsx
++++ b/apps/web/src/components/warning-banner.tsx
+@@ -3,6 +3,7 @@ import { Button } from "@workspace/ui/components/button"
+ import type { StoreWarning } from "@workspace/core/store"
+ import { downloadText } from "@/lib/ui"
+ import { useActions, useWatchlist } from "@/lib/store"
++import { useWatchlistExtensionReady } from "@/lib/twlx-bridge"
+ 
+ const MESSAGES: Record<StoreWarning, string> = {
+   "corrupt-data":
+@@ -21,7 +22,17 @@ export function WarningBanner() {
+   const warning = useWatchlist((state) => state.warning)
+   const recovery = useWatchlist((state) => state.recovery)
+   const actions = useActions()
+-  if (!warning) return null
++  const extensionReady = useWatchlistExtensionReady()
++  if (!warning && extensionReady) return null
++
++  if (!warning) {
++    return (
++      <div role="status" className="flex items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
++        <TriangleAlert className="size-4 shrink-0" />
++        <span>Watchlist Extension isn’t detected. Install or enable it to bookmark symbols from TradingView charts.</span>
++      </div>
++    )
++  }
+ 
+   // A pending repair or a newer version can't be dismissed: saving stays off until resolved.
+   const blocking = warning === "repaired-data" || warning === "newer-version"
+diff --git a/apps/web/src/lib/twlx-bridge.ts b/apps/web/src/lib/twlx-bridge.ts
+index cc149f3..865eb12 100644
+--- a/apps/web/src/lib/twlx-bridge.ts
++++ b/apps/web/src/lib/twlx-bridge.ts
+@@ -1,12 +1,33 @@
+ import { navLists } from "@workspace/core/domain"
+ import type { WatchlistStore } from "@workspace/core/store"
++import { useSyncExternalStore } from "react"
+ 
+-/** Messages on window.postMessage; the TWLX extension's relay script listens on this page. */
++/** Messages on window.postMessage; the Watchlist Extension's relay script listens on this page. */
+ const SOURCE = "twl"
+ const EXTENSION_SOURCE = "twlx"
+ 
++let extensionReady = false
++const statusListeners = new Set<() => void>()
++
++function setExtensionReady(value: boolean) {
++  if (extensionReady === value) return
++  extensionReady = value
++  statusListeners.forEach((listener) => listener())
++}
++
++export function useWatchlistExtensionReady(): boolean {
++  return useSyncExternalStore(
++    (listener) => {
++      statusListeners.add(listener)
++      return () => statusListeners.delete(listener)
++    },
++    () => extensionReady,
++    () => false
++  )
++}
++
+ /**
+- * Pushes every list, flattened for navigation, to the TWLX extension whenever lists or flags change.
++ * Pushes every list, flattened for navigation, to the Watchlist Extension whenever lists or flags change.
+  * Without the extension nobody listens, so this is a no-op. Returns a disconnect function.
+  */
+ export function connectTwlxBridge(
+@@ -16,12 +37,17 @@ export function connectTwlxBridge(
+   let timer: ReturnType<typeof setTimeout> | undefined
+ 
+   const push = () => {
+-    const { lists, flags } = store.getState().app
++    const app = store.getState().app
++    const { lists, flags } = app
+     target.postMessage(
+       {
+         source: SOURCE,
+         type: "SET_WATCHLISTS",
+-        version: 1,
++        version: 2,
++        active: {
++          kind: "list",
++          listId: app.active.kind === "list" ? app.active.listId : app.lists[0]?.id ?? null,
++        },
+         lists: navLists({ lists, flags }),
+       },
+       target.location.origin
+@@ -36,14 +62,39 @@ export function connectTwlxBridge(
+   // The relay may load after the first push; it says hello so we resend.
+   const onMessage = (event: MessageEvent) => {
+     if (event.source !== target) return
+-    if (event.data?.source === EXTENSION_SOURCE && event.data.type === "HELLO")
++    const data = event.data
++    if (data?.source === EXTENSION_SOURCE && data.type === "HELLO") {
++      setExtensionReady(true)
+       push()
++      return
++    }
++    if (data?.source !== EXTENSION_SOURCE || data.type !== "BOOKMARK_SYMBOL") return
++    const requestId = typeof data.requestId === "string" ? data.requestId : ""
++    const rawSymbol = typeof data.symbol === "string" ? data.symbol : ""
++    const state = store.getState()
++    const active = state.app.active
++    const listId = typeof data.listId === "string" ? data.listId :
++      active.kind === "list" ? active.listId : state.app.lists[0]?.id
++    const result = listId ? state.actions.addSymbolToList(listId, rawSymbol) :
++      { ok: false as const, error: { code: "not-found" as const } }
++    const list = listId ? state.app.lists.find((item) => item.id === listId) : undefined
++    target.postMessage({
++      source: SOURCE,
++      type: "BOOKMARK_RESULT",
++      version: 1,
++      requestId,
++      ok: result.ok,
++      symbol: result.ok ? result.value : undefined,
++      listName: list?.name,
++      error: result.ok ? undefined : result.error.code,
++    }, target.location.origin)
+   }
+ 
+   const unsubscribe = store.subscribe((state, previous) => {
+     if (
+       state.app.lists !== previous.app.lists ||
+-      state.app.flags !== previous.app.flags
++      state.app.flags !== previous.app.flags ||
++      state.app.active !== previous.app.active
+     )
+       schedule()
+   })
+diff --git a/packages/core/src/domain/nav.ts b/packages/core/src/domain/nav.ts
+index 9f68cf0..6909ce4 100644
+--- a/packages/core/src/domain/nav.ts
++++ b/packages/core/src/domain/nav.ts
+@@ -1,7 +1,7 @@
+ import { colorListSymbols } from "./flags"
+ import { type ActiveView, type AppState, FLAG_COLORS } from "./types"
+ 
+-/** Stable key the TWLX extension uses to find a list: `list:<id>` or `flag:<color>`. */
++/** Stable key the Watchlist Extension uses to find a list: `list:<id>` or `flag:<color>`. */
+ export function navKey(view: ActiveView): string {
+   return view.kind === "list" ? `list:${view.listId}` : `flag:${view.color}`
+ }
+diff --git a/packages/core/src/domain/symbol.ts b/packages/core/src/domain/symbol.ts
+index 186d9f3..9c8d44a 100644
+--- a/packages/core/src/domain/symbol.ts
++++ b/packages/core/src/domain/symbol.ts
+@@ -29,7 +29,7 @@ export type ChartInterval = "1D" | "1W"
+ 
+ /**
+  * Keeps the `:` literal so the URL matches TradingView's own format. No interval = TradingView's last-used timeframe.
+- * `nav` (a `navKey`) tells the TWLX extension which list the chart was opened from; TradingView ignores the fragment.
++ * `nav` (a `navKey`) tells the Watchlist Extension which list the chart was opened from; TradingView ignores the fragment.
+  */
+ export function chartUrl(
+   symbol: string,
+diff --git a/packages/core/src/store/store.test.ts b/packages/core/src/store/store.test.ts
+index 4d99605..c3ead50 100644
+--- a/packages/core/src/store/store.test.ts
++++ b/packages/core/src/store/store.test.ts
+@@ -319,6 +319,24 @@ describe("lists", () => {
+     expect(store.getState().undo).toBeNull()
+   })
+ 
++  it("adds a bookmark to a requested normal list without changing the active view", () => {
++    const { actions, list, store } = setup()
++    const defaultId = list().id
++    actions.createList("Tech")
++    const techId = list().id
++    actions.setActive({ kind: "list", listId: defaultId })
++    expect(actions.addSymbolToList(techId, "nasdaq:aapl")).toEqual({
++      ok: true,
++      value: "NASDAQ:AAPL",
++    })
++    expect(store.getState().app.active).toEqual({ kind: "list", listId: defaultId })
++    expect(store.getState().app.lists.find((item) => item.id === techId)?.entries).toHaveLength(1)
++    expect(actions.addSymbolToList(techId, "NASDAQ:AAPL")).toEqual({
++      ok: false,
++      error: { code: "duplicate", symbol: "NASDAQ:AAPL" },
++    })
++  })
++
+   it("creates, renames and validates", () => {
+     const { actions, list } = setup()
+     expect(actions.createList("Tech").ok).toBe(true)
+diff --git a/packages/core/src/store/store.ts b/packages/core/src/store/store.ts
+index a1c7ca1..00f6ac5 100644
+--- a/packages/core/src/store/store.ts
++++ b/packages/core/src/store/store.ts
+@@ -67,6 +67,8 @@ export interface Actions {
+ 
+   /** End of the active list; in a color list, flags the symbol with that color. */
+   addSymbol(raw: string): Result<string>
++  /** Adds a symbol to a specific normal list (used by the Watchlist Extension). */
++  addSymbolToList(listId: string, raw: string): Result<string>
+   addSymbolAfter(afterId: string, raw: string): Result<string>
+   /** Symbol menu "Edit symbol": replaces it in place. Flags stay with the old symbol. */
+   editSymbol(entryId: string, raw: string): Result<string>
+@@ -198,6 +200,20 @@ export function createWatchlistStore({
+         return result.ok ? ok(added) : result
+       },
+ 
++      addSymbolToList: (listId, raw) => {
++        const state = app()
++        const list = findList(state, listId)
++        if (!list) return err({ code: "not-found" })
++        let added = ""
++        const symbol = validateNewSymbol(list.entries, raw)
++        if (!symbol.ok) return symbol
++        added = symbol.value
++        commit(updateListEntries(state, list.id, (entries) =>
++          appendSymbol(entries, symbol.value, newId())
++        ))
++        return ok(added)
++      },
++
+       addSymbolAfter: (afterId, raw) => {
+         let added = ""
+         const result = editActive((entries) => {

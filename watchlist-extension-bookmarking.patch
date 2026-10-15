@@ -1,0 +1,746 @@
+diff --git a/PRD.md b/PRD.md
+index faae039..03645e7 100644
+--- a/PRD.md
++++ b/PRD.md
+@@ -1,44 +1,43 @@
+-# PRD — TWLX: TradingView Watchlist Extension · v0.1.3
++# PRD — Watchlist Extension · v0.2.0
+ 
+ ## Changelog
+ - **v0.1.3**
+   - **Shift+Space** goes to the previous symbol, exactly like ↑ (wraps around the same way).
+   - This PRD.
+-- **v0.1.2** — Baseline: open from TWL into fullscreen Navigation Mode, ↓/Space/↑ navigation with wrap-around, Daily ↔ Weekly toggle, per-tab state, live skipping of collapsed sections.
++- **v0.1.2** — Baseline: open from Watchlist into fullscreen Navigation Mode, ↓/Space/↑ navigation with wrap-around, Daily ↔ Weekly toggle, per-tab state, live skipping of collapsed sections.
+ 
+ ## 1. Goal
+-TWL (the browser-only watchlist app) can open a symbol's chart, but once on TradingView you're back to one chart per click. TWLX closes the loop: a chart opened from TWL lets you **step through that watchlist with the keyboard**, in the order and sections you set up in TWL, without leaving the chart.
++Watchlist (the browser-only watchlist app) can open a symbol's chart, but once on TradingView you're back to one chart per click. Watchlist Extension closes the loop: a chart opened from Watchlist lets you **step through that watchlist with the keyboard**, in the order and sections you set up in Watchlist, without leaving the chart.
+ 
+-- No UI on TradingView pages. The extension is a headless bridge plus a toolbar icon.
++- A minimal bookmark control appears only on linked TradingView charts; all other TradingView pages are untouched.
+ - No accounts, no backend, no market data, no TradingView login required beyond what TradingView itself needs.
+ 
+ ## 2. Scope
+ **In scope:**
+-- receiving every TWL list (normal and color lists) from a TWL tab on localhost
+-- opening a chart from TWL into **Navigation Mode** (fullscreen)
++- receiving every Watchlist list (normal and color lists) from a Watchlist tab on localhost
++- opening a chart from Watchlist into **Navigation Mode** (fullscreen)
+ - next / previous symbol, Daily ↔ Weekly toggle, mode on/off
+ - skipping symbols in collapsed sections, live
+ - per-tab navigation state
+-- a toolbar icon that focuses or opens TWL, with a per-tab NAV badge
++- a toolbar icon that focuses or opens Watchlist, with a per-tab NAV badge
+ 
+ **Out of scope:**
+-- any UI injected into TradingView (overlays, panels, buttons)
+ - editing lists, flagging or reordering from TradingView
+ - timeframes other than 1D and 1W
+ - multi-chart layouts (only the active chart is driven)
+-- TWL hosted anywhere other than `localhost` / `127.0.0.1`
++- Watchlist hosted anywhere other than `localhost` / `127.0.0.1`
+ - browsers other than Chromium (MV3, `world: "MAIN"` content scripts)
+ - syncing across devices
+ 
+-**Design principle: TradingView keeps every key it doesn't need to give up.** A tab that wasn't opened from TWL is never touched. In a TWL tab, only the keys in §6 are taken, only while Navigation Mode is on (except the mode toggle), and never while typing.
++**Design principle: TradingView keeps every key it doesn't need to give up.** A tab that wasn't opened from Watchlist is never touched. In a Watchlist tab, only the keys in §6 are taken, only while Navigation Mode is on (except the mode toggle), and never while typing.
+ 
+ ## 3. Concepts
+ | Term | Definition |
+ |---|---|
+-| TWL | The watchlist web app, served on `http://localhost:<port>` or `http://127.0.0.1:<port>`. |
++| Watchlist | The watchlist web app, served on `http://localhost:<port>` or `http://127.0.0.1:<port>`. |
+ | Nav key | Stable id of a list: `list:<listId>` for normal lists, `flag:<color>` for color lists. |
+ | Nav list | `{ symbols: string[], hidden: string[] }` — every symbol in display order, and the subset inside collapsed sections. |
+-| Linked tab | A TradingView chart tab opened from a TWL link carrying `#twlx=<navKey>`. |
++| Linked tab | A TradingView chart tab opened from a Watchlist link carrying `#twlx=<navKey>`. |
+ | Navigation Mode | The state in which a linked tab takes over ↓/↑/Space/Shift+Space/Tab. Shown as a **NAV** badge on the toolbar icon. |
+ 
+ ## 4. Architecture
+@@ -46,32 +45,33 @@ Four scripts with strict responsibilities. TradingView internals are touched in
+ 
+ | File | World | Runs on | Responsibility |
+ |---|---|---|---|
+-| `relay.js` | extension (isolated) | `localhost`, `127.0.0.1` | Copies TWL's list pushes into `chrome.storage.local`; records TWL's origin. |
++| `relay.js` | extension (isolated) | `localhost`, `127.0.0.1` | Copies Watchlist's list pushes into `chrome.storage.local`; records Watchlist's origin. |
+ | `tv-content.js` | extension (isolated) | `tradingview.com/chart/*` | Reads the link context, keeps per-tab state, handles keys, sends commands. |
+ | `tv-main.js` | page (MAIN) | `tradingview.com/chart/*` | The only code calling `TradingViewApi`. Executes commands. |
+-| `background.js` | service worker | — | Toolbar click (focus/open TWL) and per-tab NAV badge. |
++| `background.js` | service worker | — | Toolbar click (focus/open Watchlist) and per-tab NAV badge. |
+ 
+ **Permissions:** `storage` only. Host permissions: `http://localhost/*`, `http://127.0.0.1/*`, `https://www.tradingview.com/*`.
+ 
+ ## 5. Data flow
+ 
+-### 5.1 TWL → extension (FR-1 … FR-4)
+-- **FR-1 Message:** TWL posts on its own window:
++### 5.1 Watchlist → extension (FR-1 … FR-4)
++- **FR-1 Message:** Watchlist posts on its own window:
+   ```
+-  { source: "twl", type: "SET_WATCHLISTS", version: 1,
++  { source: "twl", type: "SET_WATCHLISTS", version: 2,
++    active: { kind: "list", listId: string } | null,
+     lists: { [navKey]: { symbols: string[], hidden: string[] } } }
+   ```
+   - Normal lists: symbols in list order; `hidden` = symbols inside collapsed sections.
+   - Color lists: oldest flag first; `hidden` is always empty. Only colors that have symbols are included.
+-- **FR-2 When:** on TWL load, whenever lists or flags change (debounced 150 ms), and in reply to the relay's `HELLO`.
++- **FR-2 When:** on Watchlist load, whenever lists or flags change (debounced 150 ms), and in reply to the relay's `HELLO`.
+ - **FR-3 Relay acceptance:** the relay ignores any message whose `source` isn't the same window, whose origin differs from the page's, whose `source`/`type` don't match, or whose `version` isn't `1`. Accepted messages replace `lists` wholesale and set `twlOrigin` to the page origin.
+ - **FR-4 Handshake:** on load the relay posts `{ source: "twlx", type: "HELLO" }`, so a push sent before the relay loaded is resent.
+-- A reloaded extension leaves orphaned relay scripts; their writes fail silently (no errors in the TWL page).
++- A reloaded extension leaves orphaned relay scripts; their writes fail silently (no errors in the Watchlist page).
+ 
+-### 5.2 TWL link → linked tab (FR-5 … FR-7)
+-- **FR-5 Link format:** TWL's chart, D and W links append `#twlx=<encoded navKey>`:
++### 5.2 Watchlist link → linked tab (FR-5 … FR-7)
++- **FR-5 Link format:** Watchlist's chart, D and W links append `#twlx=<encoded navKey>`:
+   `https://www.tradingview.com/chart/?symbol=NASDAQ:AAPL&interval=1D#twlx=list%3Aabc123`
+-  - Search-result links in TWL carry **no** fragment, so those charts are untouched.
++  - Search-result links in Watchlist carry **no** fragment, so those charts are untouched.
+ - **FR-6 Capture:** at `document_start`, before TradingView rewrites the URL, `tv-content.js` reads the fragment and `symbol` query parameter, writes the tab state (§5.3) with `active: true, fresh: true`, and strips the fragment with `history.replaceState`.
+ - **FR-7 First paint:** on `DOMContentLoaded`, a `fresh` tab enters fullscreen once and clears `fresh`; every linked tab reports its mode to the badge.
+ 
+@@ -90,7 +90,7 @@ Four scripts with strict responsibilities. TradingView internals are touched in
+ | `toggleTimeframe` | `getResolution()` is `"1W"` → `setResolution("1D")`, otherwise `setResolution("1W")` |
+ | `enterFullscreen` | `_chartWidgetCollection.startFullscreen()` |
+ 
+-  - Unknown command types and malformed JSON are ignored. Errors are logged with `console.debug("[TWLX]", …)` and never thrown into the page.
++  - Unknown command types and malformed JSON are ignored. Errors are logged with `console.debug("[Watchlist Extension]", …)` and never thrown into the page.
+   - TradingView objects are never cached; they're looked up for every command.
+ 
+ ## 6. Keyboard (FR-10 … FR-16)
+@@ -118,31 +118,31 @@ Four scripts with strict responsibilities. TradingView internals are touched in
+ - **FR-16 Timeframe:** Tab only toggles between 1D and 1W. Any other resolution is treated as "not weekly" and becomes 1W.
+ 
+ ## 7. Navigation rules (FR-17 … FR-21)
+-- **FR-17 Order:** the nav list's symbol order, which is TWL's display order (sections included) or a color list's flag order.
+-- **FR-18 Skipping:** symbols in `hidden` (collapsed sections in TWL) are skipped. Collapsing or expanding in TWL takes effect on the next keypress, without reopening the chart.
++- **FR-17 Order:** the nav list's symbol order, which is Watchlist's display order (sections included) or a color list's flag order.
++- **FR-18 Skipping:** symbols in `hidden` (collapsed sections in Watchlist) are skipped. Collapsing or expanding in Watchlist takes effect on the next keypress, without reopening the chart.
+ - **FR-19 Wrap-around:** past the last visible symbol, navigation continues from the first; before the first, from the last. Applies to ↓/Space and ↑/Shift+Space alike.
+ - **FR-20 Lone symbol:** if the current symbol is the only visible one, nothing happens.
+-- **FR-21 Removed symbol:** if the current symbol was removed from the list in TWL, its last known index is used: "next" lands on the symbol now at that index, "previous" on the one before it. If no index is known yet (the tab was just opened and the symbol isn't in the list), nothing happens.
+-- A list that no longer exists (deleted in TWL, or a color list that became empty) makes navigation a no-op; the chart stays as it is.
++- **FR-21 Removed symbol:** if the current symbol was removed from the list in Watchlist, its last known index is used: "next" lands on the symbol now at that index, "previous" on the one before it. If no index is known yet (the tab was just opened and the symbol isn't in the list), nothing happens.
++- A list that no longer exists (deleted in Watchlist, or a color list that became empty) makes navigation a no-op; the chart stays as it is.
+ 
+ ## 8. Toolbar icon and badge (FR-22 … FR-23)
+-- **FR-22 Click:** focuses an existing TWL tab (matched by the stored `twlOrigin`, since match patterns can't filter by port) and its window; otherwise opens `<twlOrigin>/`. Before TWL has ever pushed, the origin is `http://localhost:5173`.
++- **FR-22 Click:** focuses an existing Watchlist tab (matched by the stored `twlOrigin`, since match patterns can't filter by port) and its window; otherwise opens `<twlOrigin>/`. Before Watchlist has ever pushed, the origin is `http://localhost:5173`.
+ - **FR-23 Badge:** per tab, **NAV** on a blue (`#2962ff`) background while Navigation Mode is on, empty otherwise.
+ 
+ ## 9. Non-functional
+ - **NFR-1 Isolation:** all TradingView access is in `tv-main.js`. A TradingView update that breaks navigation is fixed in that file only.
+ - **NFR-2 Privacy:** no network requests; data stays in `chrome.storage.local` and `sessionStorage`. Only symbol lists are stored — no prices, no TradingView data.
+ - **NFR-3 Least privilege:** `storage` permission only; host access limited to localhost and TradingView chart pages.
+-- **NFR-4 Robustness:** an extension reload never throws into TWL or TradingView pages; orphaned scripts fail silently.
++- **NFR-4 Robustness:** an extension reload never throws into Watchlist or TradingView pages; orphaned scripts fail silently.
+ - **NFR-5 Latency:** a navigation keypress results in `setSymbol` within one frame when not throttled (FR-14).
+ - **NFR-6 Compatibility:** Chrome and Chromium-based browsers with MV3 and `world: "MAIN"` content scripts.
+ 
+-## 10. Dependencies on TWL
+-- TWL ≥ v1.4 with the TWLX bridge: `navLists`/`navKey` in `@workspace/core/domain`, `chartUrl(symbol, interval, nav)`, and `connectTwlxBridge`.
++## 10. Dependencies on Watchlist
++- Watchlist ≥ v1.4 with the Watchlist Extension bridge: `navLists`/`navKey` in `@workspace/core/domain`, `chartUrl(symbol, interval, nav)`, and `connectTwlxBridge`.
+ - Any change to the message shape bumps `version`; the relay drops versions it doesn't know (FR-3).
+ 
+ ## 11. Acceptance tests
+-1. Open a chart from a TWL list → it goes fullscreen; the badge shows NAV.
++1. Open a chart from a Watchlist list → it goes fullscreen; the badge shows NAV.
+ 2. ↓ several times → symbols change in list order; fullscreen stays.
+ 3. ↑ → previous symbol.
+ 4. **Shift+Space → previous symbol, same result as ↑.** Space → next symbol, same as ↓.
+@@ -150,15 +150,25 @@ Four scripts with strict responsibilities. TradingView internals are touched in
+ 6. Hold ↓ (or Shift+Space) → symbols skip quickly; on release the chart shows the last symbol reached.
+ 7. Tab → 1D ↔ 1W. Holding Tab toggles once.
+ 8. ↓ on the last symbol → the first; ↑ on the first → the last.
+-9. Collapse a section in TWL → ↓ in the open chart skips it without reopening.
+-10. Delete the current symbol in TWL → ↓ goes to the symbol that followed it; ↑ to the one before it.
++9. Collapse a section in Watchlist → ↓ in the open chart skips it without reopening.
++10. Delete the current symbol in Watchlist → ↓ goes to the symbol that followed it; ↑ to the one before it.
+ 11. Press `` ` `` → mode off, badge clears; ↓, ↑, Space, Shift+Space and Tab behave as native TradingView. Press `` ` `` again → mode on.
+ 12. Esc → mode off and TradingView still exits fullscreen.
+ 13. Click into TradingView's symbol search and type `` ` ``, Space, Shift+Space or Tab → not intercepted.
+ 14. Ctrl+↓ / Cmd+Space / Alt+Space → not intercepted.
+-15. Open a chart from TWL search results, or from a bookmark → no NAV badge; every key is TradingView's.
++15. Open a chart from Watchlist search results, or from a bookmark → no NAV badge; every key is TradingView's.
+ 16. Open the same list in two tabs → each navigates independently.
+ 17. Reload a linked tab → it stays linked, keeps the current symbol and mode, and does not re-enter fullscreen.
+-18. Open a color list's chart from TWL → navigation follows flag order; unflagging the current symbol in TWL then ↓ → the next one.
+-19. Click the toolbar icon with TWL open → its tab is focused. With TWL closed → it opens at the last known origin.
+-20. Reload the extension, then edit a list in TWL → no errors in the TWL page.
++18. Open a color list's chart from Watchlist → navigation follows flag order; unflagging the current symbol in Watchlist then ↓ → the next one.
++19. Click the toolbar icon with Watchlist open → its tab is focused. With Watchlist closed → it opens at the last known origin.
++20. Reload the extension, then edit a list in Watchlist → no errors in the Watchlist page.
++
++
++## 12. Bookmarking from TradingView
++
++A linked chart shows a compact bookmark button at the top-left. Clicking it
++sends the current symbol through the extension to Watchlist and appends it to
++the selected normal list (the active list, or the first normal list when a color
++list is open). Watchlist remains the source of truth for validation, duplicate
++handling, and persistence. Charts opened without a Watchlist navigation link do
++not show the control.
+diff --git a/README.md b/README.md
+index 43aed4d..7cd1269 100644
+--- a/README.md
++++ b/README.md
+@@ -1,36 +1,36 @@
+-# TWLX — TradingView Watchlist Extension (v0.1.3)
++# Watchlist Extension (v0.2.0)
+ 
+-Headless bridge between TWL (localhost) and TradingView chart tabs. No page UI.
++Adds a compact bookmark control and keyboard navigation to linked TradingView chart tabs.
+ 
+ ## Install
+ 1. chrome://extensions → enable Developer mode → Load unpacked → pick this folder.
+-2. Apply `twl-patch/twl-bridge.patch` to TWL and restart its dev server.
+-3. Open TWL once (so the extension learns its port), then pin the TWLX icon.
++2. Apply the Watchlist patch from this release and restart its dev server.
++3. Open Watchlist once (so the extension learns its port), then pin the Watchlist Extension icon.
+ 
+ ## Use
+-- Click a symbol, D or W link in TWL → the chart opens in fullscreen with Navigation Mode on (badge: NAV).
++- Click a symbol, D or W link in Watchlist → the chart opens in fullscreen with Navigation Mode on (badge: NAV).
+ - ↓ / Space: next symbol · ↑ / Shift+Space: previous · Tab: Daily ↔ Weekly · ` : toggle mode · Esc: exit mode.
+ - Symbols in collapsed sections are skipped. Navigation wraps around: past the last symbol it starts again from the first, and vice versa.
+ - Each tab navigates on its own, so two tabs on the same watchlist don't interfere.
+-- Charts opened any other way (or from TWL search results) are untouched.
+-- Toolbar icon: focuses the TWL tab, or opens it.
++- Charts opened any other way (or from Watchlist search results) are untouched.
++- Toolbar icon: focuses the Watchlist tab, or opens it.
+ 
+ ## Files
+ - PRD.md — product requirements: behavior, data contract, acceptance tests.
+ - manifest.json — MV3; content scripts for TradingView (page + extension world) and localhost.
+-- relay.js — on TWL: copies pushed watchlists into extension storage.
++- relay.js — on Watchlist: copies pushed watchlists into extension storage.
+ - tv-content.js — on TradingView: reads the `#twlx=` link context, per-tab state, keys.
+ - tv-main.js — on TradingView (page world): the only code touching TradingViewApi.
+ - background.js — toolbar icon and per-tab badge.
+ 
+ ## Verify on first run
+-1. Open a chart from TWL → goes fullscreen; badge shows NAV.
++1. Open a chart from Watchlist → goes fullscreen; badge shows NAV.
+ 2. ↓ several times → symbols change in list order; fullscreen stays.
+ 3. Tab → switches 1D ↔ 1W.
+ 4. Hold ↓ → it skips quickly and lands on the last symbol pressed.
+ 4b. ↓ on the last symbol → back to the first; ↑ on the first → the last.
+ 4c. Shift+Space → previous symbol, exactly like ↑ (including wrap-around).
+-5. Collapse a section in TWL → ↓ in the open chart skips it without reopening.
++5. Collapse a section in Watchlist → ↓ in the open chart skips it without reopening.
+ 6. Press ` → mode off; arrows behave as native TradingView again.
+ 7. Click in TradingView's symbol search and type ` or Tab → not intercepted.
+ 
+diff --git a/background.js b/background.js
+index 5845ec6..51f4550 100644
+--- a/background.js
++++ b/background.js
+@@ -1,7 +1,7 @@
+-// Toolbar icon opens or focuses TWL; per-tab badge shows Navigation Mode.
++// Watchlist Extension toolbar action, navigation badge, and bookmark routing.
+ 
+-// Used until TWL has sent its first watchlist push (that records its real origin).
+-const FALLBACK_TWL_ORIGIN = "http://localhost:5173"
++const FALLBACK_WATCHLIST_ORIGIN = "http://localhost:5173"
++const bookmarkTargets = new Map()
+ 
+ chrome.runtime.onInstalled.addListener(() => {
+   chrome.action.setBadgeBackgroundColor({ color: "#2962ff" })
+@@ -9,12 +9,9 @@ chrome.runtime.onInstalled.addListener(() => {
+ 
+ chrome.action.onClicked.addListener(async () => {
+   const { twlOrigin } = await chrome.storage.local.get("twlOrigin")
+-  const origin = twlOrigin ?? FALLBACK_TWL_ORIGIN
+-  // Match patterns can't select a port, so filter by origin ourselves.
+-  const tabs = await chrome.tabs.query({
+-    url: ["http://localhost/*", "http://127.0.0.1/*"],
+-  })
+-  const tab = tabs.find((t) => t.url && new URL(t.url).origin === origin)
++  const origin = twlOrigin ?? FALLBACK_WATCHLIST_ORIGIN
++  const tabs = await chrome.tabs.query({ url: ["http://localhost/*", "http://127.0.0.1/*"] })
++  const tab = tabs.find((item) => item.url && new URL(item.url).origin === origin)
+   if (tab) {
+     await chrome.tabs.update(tab.id, { active: true })
+     await chrome.windows.update(tab.windowId, { focused: true })
+@@ -23,10 +20,42 @@ chrome.action.onClicked.addListener(async () => {
+   }
+ })
+ 
+-chrome.runtime.onMessage.addListener((message, sender) => {
+-  if (message?.type !== "MODE" || sender.tab?.id == null) return
+-  chrome.action.setBadgeText({
+-    tabId: sender.tab.id,
+-    text: message.active ? "NAV" : "",
+-  })
++chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
++  if (message?.type === "MODE" && sender.tab?.id != null) {
++    chrome.action.setBadgeText({
++      tabId: sender.tab.id,
++      text: message.active ? "NAV" : "",
++    })
++    return
++  }
++
++  if (message?.type === "BOOKMARK_REQUEST" && sender.tab?.id != null) {
++    const requestId = String(message.requestId || "")
++    if (!requestId) return
++    bookmarkTargets.set(requestId, sender.tab.id)
++    chrome.storage.local.get("twlOrigin").then(async ({ twlOrigin }) => {
++      const origin = twlOrigin ?? FALLBACK_WATCHLIST_ORIGIN
++      const tabs = await chrome.tabs.query({ url: ["http://localhost/*", "http://127.0.0.1/*"] })
++      const target = tabs.find((item) => item.url && new URL(item.url).origin === origin)
++      if (!target?.id) {
++        bookmarkTargets.delete(requestId)
++        chrome.tabs.sendMessage(sender.tab.id, {
++          type: "BOOKMARK_RESULT", requestId, ok: false, error: "watchlist-unavailable",
++        }).catch(() => {})
++        return
++      }
++      chrome.tabs.sendMessage(target.id, {
++        type: "BOOKMARK_REQUEST", requestId, symbol: message.symbol,
++      }).catch(() => {})
++    })
++    sendResponse({ accepted: true })
++    return true
++  }
++
++  if (message?.type === "BOOKMARK_RESULT") {
++    const targetId = bookmarkTargets.get(String(message.requestId || ""))
++    if (targetId == null) return
++    bookmarkTargets.delete(String(message.requestId || ""))
++    chrome.tabs.sendMessage(targetId, message).catch(() => {})
++  }
+ })
+diff --git a/manifest.json b/manifest.json
+index 3acad44..42bf173 100644
+--- a/manifest.json
++++ b/manifest.json
+@@ -1,31 +1,50 @@
+ {
+   "manifest_version": 3,
+-  "name": "TWLX",
+-  "version": "0.1.3",
+-  "description": "Headless bridge between the TWL watchlist app and TradingView charts.",
+-  "permissions": ["storage"],
++  "name": "Watchlist Extension",
++  "version": "0.2.0",
++  "description": "Adds Watchlist bookmarking and keyboard navigation to TradingView charts.",
++  "permissions": [
++    "storage"
++  ],
+   "host_permissions": [
+     "http://localhost/*",
+     "http://127.0.0.1/*",
+     "https://www.tradingview.com/*"
+   ],
+-  "background": { "service_worker": "background.js" },
+-  "action": { "default_title": "Open TWL" },
++  "background": {
++    "service_worker": "background.js"
++  },
++  "action": {
++    "default_title": "Open Watchlist"
++  },
+   "content_scripts": [
+     {
+-      "matches": ["https://www.tradingview.com/chart/*"],
+-      "js": ["tv-main.js"],
++      "matches": [
++        "https://www.tradingview.com/chart/*"
++      ],
++      "js": [
++        "tv-main.js"
++      ],
+       "run_at": "document_start",
+       "world": "MAIN"
+     },
+     {
+-      "matches": ["https://www.tradingview.com/chart/*"],
+-      "js": ["tv-content.js"],
++      "matches": [
++        "https://www.tradingview.com/chart/*"
++      ],
++      "js": [
++        "tv-content.js"
++      ],
+       "run_at": "document_start"
+     },
+     {
+-      "matches": ["http://localhost/*", "http://127.0.0.1/*"],
+-      "js": ["relay.js"],
++      "matches": [
++        "http://localhost/*",
++        "http://127.0.0.1/*"
++      ],
++      "js": [
++        "relay.js"
++      ],
+       "run_at": "document_idle"
+     }
+   ]
+diff --git a/relay.js b/relay.js
+index 3ce94cc..b5b3107 100644
+--- a/relay.js
++++ b/relay.js
+@@ -1,17 +1,39 @@
+-// Runs on localhost pages. Copies TWL's watchlist pushes into extension storage.
+-// Ignores everything that isn't a TWL message from this same page.
++// Runs on Watchlist pages. Bridges Watchlist messages to the extension.
+ 
+ window.addEventListener("message", (event) => {
+   if (event.source !== window || event.origin !== location.origin) return
+   const data = event.data
+-  if (data?.source !== "twl" || data.type !== "SET_WATCHLISTS") return
+-  if (data.version !== 1) return
+-  try {
+-    chrome.storage.local.set({ lists: data.lists, twlOrigin: location.origin })
+-  } catch {
+-    // Extension was reloaded; this orphaned script can no longer write.
++  if (data?.source !== "twl") return
++  if (data.type === "SET_WATCHLISTS" && (data.version === 1 || data.version === 2)) {
++    try {
++      chrome.storage.local.set({
++        lists: data.lists,
++        active: data.active ?? null,
++        twlOrigin: location.origin,
++      })
++    } catch {
++      // Extension was reloaded; this orphaned script can no longer write.
++    }
++    return
+   }
++  if (data.type === "BOOKMARK_RESULT") {
++    try { chrome.runtime.sendMessage({ type: "BOOKMARK_RESULT", ...data }) } catch {
++      // Extension was reloaded.
++    }
++  }
++})
++
++chrome.runtime.onMessage.addListener((message) => {
++  if (message?.type !== "BOOKMARK_REQUEST") return
++  window.postMessage({
++    source: "twlx",
++    type: "BOOKMARK_SYMBOL",
++    version: 1,
++    requestId: message.requestId,
++    symbol: message.symbol,
++    listId: message.listId,
++  }, location.origin)
+ })
+ 
+-// TWL may have pushed before this script loaded; ask it to resend.
++// Ask Watchlist to resend state and mark the extension as ready.
+ window.postMessage({ source: "twlx", type: "HELLO" }, location.origin)
+diff --git a/tv-content.js b/tv-content.js
+index 378332e..6fdcabe 100644
+--- a/tv-content.js
++++ b/tv-content.js
+@@ -1,86 +1,63 @@
+-// Extension world on TradingView chart tabs: per-tab navigation state and keys.
+-// Talks to tv-main.js (page world) through "twlx:command" events.
++// Extension-world code for linked TradingView chart tabs.
++// The Watchlist Extension overlay is intentionally tiny and lives in Shadow DOM.
+ ;(() => {
+   const NAV_STORAGE_KEY = "twlx.nav"
+   const SYMBOL_THROTTLE_MS = 150
++  let lists = null
++  let activeList = null
++  let bookmarkButton = null
++  let bookmarkStatus = null
++  let bookmarkRequest = null
+ 
+-  /**
+-   * Per-tab state in sessionStorage: survives reloads and TradingView's redirects, unique per tab.
+-   * { list: navKey, symbol: last list symbol shown, index: its position, active, fresh }
+-   */
+   function readNav() {
+-    try {
+-      return JSON.parse(sessionStorage.getItem(NAV_STORAGE_KEY))
+-    } catch {
+-      return null
+-    }
+-  }
+-
+-  function writeNav(nav) {
+-    sessionStorage.setItem(NAV_STORAGE_KEY, JSON.stringify(nav))
++    try { return JSON.parse(sessionStorage.getItem(NAV_STORAGE_KEY)) } catch { return null }
+   }
++  function writeNav(nav) { sessionStorage.setItem(NAV_STORAGE_KEY, JSON.stringify(nav)) }
+ 
+-  // Read the link's context before TradingView rewrites the URL.
+   const match = location.hash.match(/[#&]twlx=([^&]+)/)
+-  const symbol = new URLSearchParams(location.search).get("symbol")
+-  if (match && symbol) {
++  const initialSymbol = new URLSearchParams(location.search).get("symbol")
++  if (match && initialSymbol) {
+     writeNav({
+-      list: decodeURIComponent(match[1]),
+-      symbol: symbol.toUpperCase(),
+-      index: -1,
+-      active: true,
+-      fresh: true,
++      list: decodeURIComponent(match[1]), symbol: initialSymbol.toUpperCase(),
++      index: -1, active: true, fresh: true,
+     })
+     history.replaceState(history.state, "", location.pathname + location.search)
+   }
+ 
+-  let lists = null
+-  chrome.storage.local.get("lists").then((result) => {
++  chrome.storage.local.get(["lists", "active"]).then((result) => {
+     lists = result.lists ?? null
++    activeList = result.active ?? null
+   })
+   chrome.storage.onChanged.addListener((changes, area) => {
+-    if (area === "local" && changes.lists) lists = changes.lists.newValue ?? null
++    if (area !== "local") return
++    if (changes.lists) lists = changes.lists.newValue ?? null
++    if (changes.active) activeList = changes.active.newValue ?? null
+   })
+ 
+   function command(type, arg) {
+-    window.dispatchEvent(
+-      new CustomEvent("twlx:command", { detail: JSON.stringify({ type, arg }) })
+-    )
++    window.dispatchEvent(new CustomEvent("twlx:command", {
++      detail: JSON.stringify({ type, arg }),
++    }))
+   }
+-
+   function reportMode(active) {
+-    try {
+-      chrome.runtime.sendMessage({ type: "MODE", active })
+-    } catch {
+-      // Extension was reloaded.
+-    }
++    try { chrome.runtime.sendMessage({ type: "MODE", active }) } catch {}
+   }
+-
+   function setActive(nav, active) {
+-    nav.active = active
+-    writeNav(nav)
+-    reportMode(active)
++    nav.active = active; writeNav(nav); reportMode(active)
+   }
+ 
+-  // Holding ↓ fires many keydowns: send the first at once, then only the latest every 150 ms.
+   let cooling = false
+   let pending = null
+   function showSymbol(symbol) {
+-    if (cooling) {
+-      pending = symbol
+-      return
+-    }
+-    command("setSymbol", symbol)
+-    cooling = true
++    if (cooling) { pending = symbol; return }
++    command("setSymbol", symbol); cooling = true
+     setTimeout(() => {
+       cooling = false
+-      const next = pending
+-      pending = null
++      const next = pending; pending = null
+       if (next) showSymbol(next)
+     }, SYMBOL_THROTTLE_MS)
+   }
+ 
+-  /** Next/previous visible symbol, wrapping around at either end. */
+   function move(nav, step) {
+     const list = lists?.[nav.list]
+     if (!list) return
+@@ -88,7 +65,6 @@
+     const hidden = new Set(list.hidden)
+     let i = symbols.indexOf(nav.symbol)
+     if (i < 0) {
+-      // Our symbol was removed from the list: its old position now holds the one after it.
+       if (nav.index < 0) return
+       const k = Math.min(nav.index, symbols.length)
+       i = step > 0 ? k - 1 : k
+@@ -97,78 +73,114 @@
+     for (let s = 1; s <= n; s++) {
+       const j = (((i + step * s) % n) + n) % n
+       if (hidden.has(symbols[j])) continue
+-      if (j === i) return // The current symbol is the only visible one.
+-      nav.symbol = symbols[j]
+-      nav.index = j
+-      writeNav(nav)
+-      showSymbol(nav.symbol)
++      if (j === i) return
++      nav.symbol = symbols[j]; nav.index = j; writeNav(nav); showSymbol(nav.symbol)
++      updateBookmarkButton()
+       return
+     }
+   }
+ 
+   function isTyping(target) {
+-    return (
+-      target instanceof Element &&
++    return target instanceof Element &&
+       (target.closest("input, textarea, select") !== null ||
+-        (target instanceof HTMLElement && target.isContentEditable))
+-    )
++       (target instanceof HTMLElement && target.isContentEditable))
++  }
++  function consume(event) { event.preventDefault(); event.stopImmediatePropagation() }
++
++  function currentSymbol() {
++    const query = new URLSearchParams(location.search).get("symbol")
++    const nav = readNav()
++    return (query || nav?.symbol || "").trim().toUpperCase()
+   }
+ 
+-  function consume(event) {
+-    event.preventDefault()
+-    event.stopImmediatePropagation()
++  function setBookmarkState(text, disabled) {
++    if (!bookmarkButton) return
++    bookmarkButton.textContent = text
++    bookmarkButton.disabled = disabled
++    bookmarkButton.setAttribute("aria-label", text === "★" ? "Bookmarked" : "Bookmark current symbol")
++  }
++  function updateBookmarkButton() {
++    const symbol = currentSymbol()
++    const key = activeList?.listId
++    const entries = key && lists?.[`list:${key}`]?.symbols
++    const already = Boolean(entries?.includes(symbol))
++    if (!bookmarkRequest) setBookmarkState(already ? "★" : "☆", false)
++    if (bookmarkStatus) bookmarkStatus.textContent = already ? "Bookmarked" : ""
++  }
++  function requestBookmark() {
++    const symbol = currentSymbol()
++    if (!symbol || bookmarkRequest) return
++    const requestId = crypto.randomUUID()
++    bookmarkRequest = requestId
++    setBookmarkState("…", true)
++    bookmarkStatus.textContent = "Saving…"
++    chrome.runtime.sendMessage({
++      type: "BOOKMARK_REQUEST", requestId, symbol,
++    }).catch(() => {
++      bookmarkRequest = null; setBookmarkState("☆", false)
++      bookmarkStatus.textContent = "Watchlist unavailable"
++    })
+   }
+ 
+-  window.addEventListener(
+-    "keydown",
+-    (event) => {
+-      const nav = readNav()
+-      if (!nav) return // Not opened from TWL: TradingView keeps every key.
+-      if (event.ctrlKey || event.metaKey || event.altKey) return
+-      if (isTyping(event.target)) return
++  function createBookmarkOverlay() {
++    if (document.getElementById("watchlist-extension-bookmark")) return
++    const host = document.createElement("div")
++    host.id = "watchlist-extension-bookmark"
++    const shadow = host.attachShadow({ mode: "closed" })
++    const style = document.createElement("style")
++    style.textContent = `
++      :host { all: initial; }
++      .wrap { position: fixed; top: 8px; left: 8px; z-index: 2147483647; display: flex; align-items: center; gap: 4px; font: 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
++      button { width: 26px; height: 26px; padding: 0; border: 1px solid rgba(120,130,145,.45); border-radius: 5px; background: rgba(25,29,36,.72); color: #d6d9df; cursor: pointer; font-size: 18px; line-height: 24px; opacity: .72; box-shadow: 0 1px 4px rgba(0,0,0,.22); }
++      button:hover, button:focus-visible { opacity: 1; border-color: #2962ff; outline: none; }
++      button:disabled { cursor: wait; opacity: .7; }
++      .status { max-width: 180px; padding: 4px 6px; border-radius: 4px; color: #d6d9df; background: rgba(25,29,36,.86); white-space: nowrap; }
++      .status:empty { display: none; }
++    `
++    const wrap = document.createElement("div"); wrap.className = "wrap"
++    bookmarkButton = document.createElement("button"); bookmarkButton.type = "button"
++    bookmarkButton.title = "Bookmark current symbol"
++    bookmarkButton.addEventListener("click", requestBookmark)
++    bookmarkStatus = document.createElement("span"); bookmarkStatus.className = "status"
++    wrap.append(bookmarkButton, bookmarkStatus); shadow.append(style, wrap); document.documentElement.append(host)
++    updateBookmarkButton()
++  }
+ 
+-      if (event.code === "Backquote") {
+-        consume(event)
+-        if (!event.repeat) setActive(nav, !nav.active)
+-        return
+-      }
+-      if (!nav.active) return
++  chrome.runtime.onMessage.addListener((message) => {
++    if (message?.type !== "BOOKMARK_RESULT" || message.requestId !== bookmarkRequest) return
++    bookmarkRequest = null
++    if (message.ok) {
++      setBookmarkState("★", false)
++      bookmarkStatus.textContent = `Added to ${message.listName || "Watchlist"}`
++    } else {
++      setBookmarkState("☆", false)
++      bookmarkStatus.textContent = message.error === "duplicate" ? "Already bookmarked" : "Couldn’t save"
++    }
++    setTimeout(() => { if (bookmarkStatus) bookmarkStatus.textContent = "" }, 2200)
++  })
+ 
+-      switch (event.key) {
+-        case "Escape":
+-          setActive(nav, false) // TradingView still gets Esc.
+-          return
+-        case "Tab":
+-          consume(event)
+-          if (!event.repeat) command("toggleTimeframe")
+-          return
+-        case "ArrowUp":
+-          consume(event)
+-          move(nav, -1)
+-          return
+-        case "ArrowDown":
+-          consume(event)
+-          move(nav, 1)
+-          return
+-        case " ":
+-          // Space pages forward like ↓; Shift+Space goes back like ↑.
+-          consume(event)
+-          move(nav, event.shiftKey ? -1 : 1)
+-          return
+-      }
+-    },
+-    { capture: true }
+-  )
++  window.addEventListener("popstate", updateBookmarkButton)
++  window.addEventListener("hashchange", updateBookmarkButton)
++  window.addEventListener("keydown", (event) => {
++    const nav = readNav()
++    if (!nav || event.ctrlKey || event.metaKey || event.altKey || isTyping(event.target)) return
++    if (event.code === "Backquote") { consume(event); if (!event.repeat) setActive(nav, !nav.active); return }
++    if (!nav.active) return
++    switch (event.key) {
++      case "Escape": setActive(nav, false); return
++      case "Tab": consume(event); if (!event.repeat) command("toggleTimeframe"); return
++      case "ArrowUp": consume(event); move(nav, -1); return
++      case "ArrowDown": consume(event); move(nav, 1); return
++      case " ": consume(event); move(nav, event.shiftKey ? -1 : 1); return
++    }
++  }, { capture: true })
+ 
+-  // tv-main.js registers its listener at document_start, so it is ready by now.
+   window.addEventListener("DOMContentLoaded", () => {
+     const nav = readNav()
+     if (!nav) return
+-    if (nav.fresh) {
+-      nav.fresh = false
+-      writeNav(nav)
+-      command("enterFullscreen")
+-    }
++    if (nav.fresh) { nav.fresh = false; writeNav(nav); command("enterFullscreen") }
+     reportMode(nav.active)
++    createBookmarkOverlay()
++    setInterval(updateBookmarkButton, 750)
+   })
+ })()
+diff --git a/tv-main.js b/tv-main.js
+index 8692aea..28c31fa 100644
+--- a/tv-main.js
++++ b/tv-main.js
+@@ -53,7 +53,7 @@
+     try {
+       run(chart, command.arg)
+     } catch (error) {
+-      console.debug("[TWLX]", command.type, error)
++      console.debug("[Watchlist Extension]", command.type, error)
+     }
+   })
+ })()
