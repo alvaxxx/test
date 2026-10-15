@@ -436,7 +436,7 @@ index 3ce94cc..b5b3107 100644
 +// Ask Watchlist to resend state and mark the extension as ready.
  window.postMessage({ source: "twlx", type: "HELLO" }, location.origin)
 diff --git a/tv-content.js b/tv-content.js
-index 378332e..6fdcabe 100644
+index 378332e..d38fe51 100644
 --- a/tv-content.js
 +++ b/tv-content.js
 @@ -1,86 +1,63 @@
@@ -560,7 +560,7 @@ index 378332e..6fdcabe 100644
        if (nav.index < 0) return
        const k = Math.min(nav.index, symbols.length)
        i = step > 0 ? k - 1 : k
-@@ -97,78 +73,114 @@
+@@ -97,78 +73,117 @@
      for (let s = 1; s <= n; s++) {
        const j = (((i + step * s) % n) + n) % n
        if (hidden.has(symbols[j])) continue
@@ -590,7 +590,10 @@ index 378332e..6fdcabe 100644
 +  function currentSymbol() {
 +    const query = new URLSearchParams(location.search).get("symbol")
 +    const nav = readNav()
-+    return (query || nav?.symbol || "").trim().toUpperCase()
++    // TradingView keeps the original query string while navigation mode
++    // changes symbols through TradingViewApi. Prefer the tab's navigation
++    // state so the bookmark indicator always describes the visible chart.
++    return (nav?.symbol || query || "").trim().toUpperCase()
    }
  
 -  function consume(event) {
